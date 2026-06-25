@@ -1,5 +1,5 @@
 import moshiProcessorUrl from "../../audio-processor.ts?worker&url";
-import { FC, useEffect, useState, useCallback, useRef, MutableRefObject, ChangeEvent } from "react";
+import { FC, useEffect, useState, useCallback, useRef, MutableRefObject, ChangeEvent, DragEvent } from "react";
 import eruda from "eruda";
 import { useSearchParams } from "react-router-dom";
 import { Conversation } from "../Conversation/Conversation";
@@ -59,6 +59,19 @@ const WarningIcon = () => (
   </svg>
 );
 
+interface LoadedFile {
+  name: string;
+  content: string;
+}
+
+const readFileAsText = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target?.result as string ?? "");
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
+
 const Homepage = ({
   startConnection,
   showMicrophoneAccessMessage,
@@ -67,26 +80,62 @@ const Homepage = ({
   voicePrompt,
   setVoicePrompt,
 }: HomepageProps) => {
-  const [fileName, setFileName] = useState<string>("");
+  const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const content = ev.target?.result as string;
-      setTextPrompt(content);
-      setFileName(file.name);
-    };
-    reader.readAsText(file);
+  const addFiles = useCallback(async (files: FileList | File[]) => {
+    const txtFiles = Array.from(files).filter(
+      (f) => f.type === "text/plain" || f.name.endsWith(".txt"),
+    );
+    if (!txtFiles.length) return;
+
+    const newLoaded: LoadedFile[] = await Promise.all(
+      txtFiles.map(async (f) => ({ name: f.name, content: await readFileAsText(f) })),
+    );
+
+    setLoadedFiles((prev) => {
+      // Deduplicate by name
+      const existing = new Set(prev.map((f) => f.name));
+      const merged = [...prev, ...newLoaded.filter((f) => !existing.has(f.name))];
+      // Update combined prompt
+      const combined = merged.map((f) => f.content.trim()).join("\n\n");
+      setTextPrompt(combined);
+      return merged;
+    });
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [setTextPrompt]);
+
+  const removeFile = (name: string) => {
+    setLoadedFiles((prev) => {
+      const next = prev.filter((f) => f.name !== name);
+      const combined = next.map((f) => f.content.trim()).join("\n\n");
+      setTextPrompt(combined);
+      return next;
+    });
   };
 
-  const clearFile = () => {
-    setFileName("");
+  const clearAllFiles = () => {
+    setLoadedFiles([]);
     setTextPrompt("");
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) addFiles(e.target.files);
+  };
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  const handleDragLeave = () => setIsDragging(false);
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files) addFiles(e.dataTransfer.files);
   };
 
   const handleConnect = async () => {
@@ -133,35 +182,72 @@ const Homepage = ({
                 <label htmlFor="text-prompt" className="text-sm font-semibold text-[#060A39]">
                   System Prompt
                 </label>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1.5 text-xs text-[#3551F2] hover:text-[#1a35d4] font-medium transition-colors"
-                >
-                  <UploadIcon />
-                  Upload .txt file
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-1.5 text-xs text-[#3551F2] hover:text-[#1a35d4] font-medium transition-colors"
+                  >
+                    <UploadIcon />
+                    Upload .txt files
+                  </button>
+                  {loadedFiles.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={clearAllFiles}
+                      className="text-xs text-red-400 hover:text-red-600 font-medium transition-colors"
+                    >
+                      Clear all
+                    </button>
+                  )}
+                </div>
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept=".txt,text/plain"
-                  onChange={handleFileUpload}
+                  multiple
+                  onChange={handleFileInputChange}
                   className="hidden"
                 />
               </div>
 
-              {fileName && (
-                <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl text-xs text-[#3551F2]">
-                  <FileIcon />
-                  <span className="flex-1 truncate">Loaded: <strong>{fileName}</strong></span>
-                  <button
-                    type="button"
-                    onClick={clearFile}
-                    className="text-gray-400 hover:text-red-400 transition-colors ml-1 text-base leading-none"
-                    aria-label="Remove file"
-                  >
-                    ×
-                  </button>
+              {/* Drag & drop zone */}
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`mb-3 border-2 border-dashed rounded-xl px-4 py-3 text-center cursor-pointer transition-all ${
+                  isDragging
+                    ? "border-[#3551F2] bg-blue-50"
+                    : "border-gray-200 hover:border-[#3551F2]/50 hover:bg-gray-50"
+                }`}
+              >
+                <p className="text-xs text-gray-400">
+                  <span className="text-[#3551F2] font-medium">Click to browse</span> or drag &amp; drop multiple .txt files here
+                </p>
+              </div>
+
+              {/* Loaded file chips */}
+              {loadedFiles.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {loadedFiles.map((f) => (
+                    <div
+                      key={f.name}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 border border-blue-100 rounded-lg text-xs text-[#3551F2]"
+                    >
+                      <FileIcon />
+                      <span className="max-w-[160px] truncate font-medium">{f.name}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); removeFile(f.name); }}
+                        className="text-gray-400 hover:text-red-400 transition-colors leading-none ml-0.5"
+                        aria-label={`Remove ${f.name}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -174,7 +260,7 @@ const Homepage = ({
                 placeholder="Define how your AI caller should behave. For example:&#10;&#10;'You are a professional virtual assistant for Cadre Crew. Help clients with scheduling, inquiries, and support. Be friendly, concise, and solution-focused.'"
               />
               <p className="text-xs text-gray-400 mt-1.5">
-                No character limit — paste a full script or upload a .txt file above.
+                No character limit — type directly, upload multiple .txt files, or drag &amp; drop them above.
               </p>
             </div>
 

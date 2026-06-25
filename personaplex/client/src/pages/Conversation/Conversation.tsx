@@ -62,13 +62,14 @@ const buildURL = ({
   url.searchParams.append("audio_seed", audioSeed.toString());
   url.searchParams.append("repetition_penalty_context", params.repetitionPenaltyContext.toString());
   url.searchParams.append("repetition_penalty", params.repetitionPenalty.toString());
+  // Always use prompt_id (POST) — never put the raw prompt in the URL to avoid HTTP 400 LineTooLong
   if (promptId) {
     url.searchParams.append("prompt_id", promptId);
-  } else if (params.textPrompt.trim()) {
-    url.searchParams.append("text_prompt", params.textPrompt);
   }
+  // text_prompt intentionally omitted from URL; empty string signals "no prompt" to the server
+  url.searchParams.append("text_prompt", "");
   url.searchParams.append("voice_prompt", params.voicePrompt.toString());
-  console.log(url.toString());
+  console.log("WS URL length:", url.toString().length);
   return url.toString();
 };
 
