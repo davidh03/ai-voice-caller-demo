@@ -260,7 +260,7 @@ const Homepage = ({
                 placeholder="Define how your AI caller should behave. For example:&#10;&#10;'You are a professional virtual assistant for Cadre Crew. Help clients with scheduling, inquiries, and support. Be friendly, concise, and solution-focused.'"
               />
               <p className="text-xs text-gray-400 mt-1.5">
-                No character limit — type directly, upload multiple .txt files, or drag &amp; drop them above.
+                Large prompts are supported but trimmed to ~2,048 tokens on the server to keep connections stable. Put the most important instructions at the top.
               </p>
             </div>
 

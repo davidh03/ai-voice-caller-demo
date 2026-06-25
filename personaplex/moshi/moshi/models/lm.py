@@ -33,6 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from os.path import splitext
+import asyncio
 import logging
 import numpy as np
 import sys
@@ -1112,9 +1113,21 @@ class LMGen(StreamingModule[_LMGenState]):
             pass
 
     async def _step_text_prompt_async(self, is_alive: Optional[Callable]=None):
-        for _ in self._step_text_prompt_core():
-            if is_alive is not None and not await is_alive():
-                break
+        if self.text_prompt_tokens is None:
+            return
+        total = len(self.text_prompt_tokens)
+        for i, text_prompt_token in enumerate(self.text_prompt_tokens):
+            if is_alive is not None and i % 5 == 0 and not await is_alive():
+                print(f"Text prompt loading aborted at token {i}/{total}")
+                return
+            # Run GPU step off the event loop so WebSocket keepalives can fire.
+            await asyncio.to_thread(
+                self.step,
+                moshi_tokens=self._encode_zero_frame(),
+                text_token=text_prompt_token,
+                input_tokens=self._encode_sine_frame(),
+            )
+        print('Done loading text prompt.')
 
     async def step_system_prompts_async(self, mimi, is_alive: Optional[Callable]=None):
         await self._step_voice_prompt_async(mimi, is_alive)

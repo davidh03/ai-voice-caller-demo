@@ -57,6 +57,10 @@ DeviceString = Literal["cuda"] | Literal["cpu"] #| Literal["mps"]
 # Short-lived store for text prompts uploaded via POST (avoids URL length limits).
 _prompt_store: dict[str, str] = {}
 
+# Each token requires a full GPU forward pass during connection setup. Very long prompts
+# block the event loop and cause WebSocket/proxy timeouts before the handshake is sent.
+MAX_TEXT_PROMPT_TOKENS = 2048
+
 
 async def handle_prompt_upload(request: web.Request) -> web.Response:
     try:
@@ -191,11 +195,19 @@ class ServerState:
             else:
                 self.lm_gen.load_voice_prompt(voice_prompt_path)
         text_prompt = _resolve_text_prompt(request)
-        self.lm_gen.text_prompt_tokens = (
-            self.text_tokenizer.encode(wrap_with_system_tags(text_prompt))
-            if len(text_prompt) > 0
-            else None
-        )
+        if len(text_prompt) > 0:
+            wrapped = wrap_with_system_tags(text_prompt)
+            tokens = self.text_tokenizer.encode(wrapped)
+            if len(tokens) > MAX_TEXT_PROMPT_TOKENS:
+                clog.log(
+                    "warning",
+                    f"text prompt truncated from {len(tokens)} to {MAX_TEXT_PROMPT_TOKENS} tokens "
+                    f"({len(text_prompt)} chars) to avoid connection timeouts",
+                )
+                tokens = tokens[:MAX_TEXT_PROMPT_TOKENS]
+            self.lm_gen.text_prompt_tokens = tokens
+        else:
+            self.lm_gen.text_prompt_tokens = None
         seed = int(request["seed"]) if "seed" in request.query else None
 
         async def recv_loop():
@@ -308,8 +320,29 @@ class ServerState:
                 except aiohttp.ClientConnectionError:
                     return False
                 return True
-            # Reuse mimi for encoding voice prompt and then reset it before conversation starts
-            await self.lm_gen.step_system_prompts_async(self.mimi, is_alive=is_alive)
+            async def ws_keepalive():
+                """Ping while loading system prompts so proxies don't drop idle connections."""
+                try:
+                    while True:
+                        await asyncio.sleep(10)
+                        if ws.closed:
+                            break
+                        await ws.ping()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+
+            keepalive_task = asyncio.create_task(ws_keepalive())
+            try:
+                # Reuse mimi for encoding voice prompt and then reset it before conversation starts
+                await self.lm_gen.step_system_prompts_async(self.mimi, is_alive=is_alive)
+            finally:
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
             self.mimi.reset_streaming()
             clog.log("info", "done with system prompts")
             # Send the handshake.

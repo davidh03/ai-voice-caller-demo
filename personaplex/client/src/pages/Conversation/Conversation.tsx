@@ -407,6 +407,9 @@ export const Conversation: FC<ConversationProps> = ({
                         <div className="text-center">
                           <div className="animate-spin h-6 w-6 border-2 border-[#3551F2] border-t-transparent rounded-full mx-auto mb-3" />
                           Connecting to AI…
+                          <p className="text-xs text-gray-400 mt-2 max-w-xs">
+                            Loading your system prompt. Large prompts can take up to a minute — please wait.
+                          </p>
                         </div>
                       </div>
                     )}
