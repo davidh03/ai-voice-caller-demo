@@ -54,6 +54,29 @@ from .utils.logging import setup_logger, ColorizedLog
 logger = setup_logger(__name__)
 DeviceString = Literal["cuda"] | Literal["cpu"] #| Literal["mps"]
 
+# Short-lived store for text prompts uploaded via POST (avoids URL length limits).
+_prompt_store: dict[str, str] = {}
+
+
+async def handle_prompt_upload(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    text = data.get("text", "")
+    if not isinstance(text, str):
+        return web.json_response({"error": "text must be a string"}, status=400)
+    prompt_id = secrets.token_urlsafe(16)
+    _prompt_store[prompt_id] = text
+    return web.json_response({"id": prompt_id})
+
+
+def _resolve_text_prompt(request: web.Request) -> str:
+    prompt_id = request.query.get("prompt_id")
+    if prompt_id and prompt_id in _prompt_store:
+        return _prompt_store.pop(prompt_id)
+    return request.query.get("text_prompt", "")
+
 def torch_auto_device(requested: Optional[DeviceString] = None) -> torch.device:
     """Return a torch.device based on the requested string or availability."""
     if requested is not None:
@@ -167,7 +190,12 @@ class ServerState:
                 self.lm_gen.load_voice_prompt_embeddings(voice_prompt_path)
             else:
                 self.lm_gen.load_voice_prompt(voice_prompt_path)
-        self.lm_gen.text_prompt_tokens = self.text_tokenizer.encode(wrap_with_system_tags(request.query["text_prompt"])) if len(request.query["text_prompt"]) > 0 else None
+        text_prompt = _resolve_text_prompt(request)
+        self.lm_gen.text_prompt_tokens = (
+            self.text_tokenizer.encode(wrap_with_system_tags(text_prompt))
+            if len(text_prompt) > 0
+            else None
+        )
         seed = int(request["seed"]) if "seed" in request.query else None
 
         async def recv_loop():
@@ -251,8 +279,9 @@ class ServerState:
                     await ws.send_bytes(b"\x01" + msg)
 
         clog.log("info", "accepted connection")
-        if len(request.query["text_prompt"]) > 0:
-            clog.log("info", f"text prompt: {request.query['text_prompt']}")
+        if len(text_prompt) > 0:
+            preview = text_prompt if len(text_prompt) <= 200 else text_prompt[:200] + "..."
+            clog.log("info", f"text prompt ({len(text_prompt)} chars): {preview}")
         if len(request.query["voice_prompt"]) > 0:
             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
         close = False
@@ -457,6 +486,7 @@ def main():
     logger.info("warming up the model")
     state.warmup()
     app = web.Application()
+    app.router.add_post("/api/prompt", handle_prompt_upload)
     app.router.add_get("/api/chat", state.handle_chat)
     if static_path is not None:
         async def handle_root(_):
