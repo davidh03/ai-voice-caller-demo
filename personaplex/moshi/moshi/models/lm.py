@@ -1094,6 +1094,8 @@ class LMGen(StreamingModule[_LMGenState]):
                 break
 
     def _step_text_prompt_core(self) -> Iterator[None]:
+        if self.text_prompt_tokens is None:
+            return
         for text_prompt_token in self.text_prompt_tokens:
             yield
             self.step(
