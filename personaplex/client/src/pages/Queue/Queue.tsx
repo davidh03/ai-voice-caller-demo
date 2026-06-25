@@ -6,6 +6,7 @@ import { Conversation } from "../Conversation/Conversation";
 import { useModelParams } from "../Conversation/hooks/useModelParams";
 import { env } from "../../env";
 import { prewarmDecoderWorker } from "../../decoder/decoderWorker";
+import { countPromptTokens } from "../Conversation/api/countPromptTokens";
 
 const VOICE_OPTIONS = [
   "NATF0.pt", "NATF1.pt", "NATF2.pt", "NATF3.pt",
@@ -83,7 +84,29 @@ const Homepage = ({
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [tokenCount, setTokenCount] = useState<{ tokens: number; chars: number } | null>(null);
+  const [tokenCountLoading, setTokenCountLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!textPrompt.trim()) {
+      setTokenCount(null);
+      setTokenCountLoading(false);
+      return;
+    }
+    setTokenCountLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const result = await countPromptTokens(textPrompt);
+        setTokenCount(result);
+      } catch {
+        setTokenCount(null);
+      } finally {
+        setTokenCountLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [textPrompt]);
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const txtFiles = Array.from(files).filter(
@@ -259,9 +282,36 @@ const Homepage = ({
                 className="w-full h-52 min-h-[120px] p-3.5 bg-white text-[#060A39] border border-gray-200 rounded-xl resize-y focus:outline-none focus:ring-2 focus:ring-[#3551F2]/40 focus:border-[#3551F2] text-sm leading-relaxed placeholder:text-gray-400 transition-all"
                 placeholder="Define how your AI caller should behave. For example:&#10;&#10;'You are a professional virtual assistant for Cadre Crew. Help clients with scheduling, inquiries, and support. Be friendly, concise, and solution-focused.'"
               />
-              <p className="text-xs text-gray-400 mt-1.5">
-                Large prompts are supported but trimmed to ~2,048 tokens on the server to keep connections stable. Put the most important instructions at the top.
-              </p>
+              <div className="mt-2 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <p className="text-gray-400">
+                    No character limit — type, upload, or drag &amp; drop multiple .txt files.
+                  </p>
+                  <span className="text-gray-500 whitespace-nowrap ml-3">
+                    {tokenCountLoading ? (
+                      "Counting tokens…"
+                    ) : tokenCount ? (
+                      <>
+                        <strong className="text-[#3551F2]">{tokenCount.tokens.toLocaleString()}</strong>
+                        {" "}tokens · {tokenCount.chars.toLocaleString()} chars
+                      </>
+                    ) : null}
+                  </span>
+                </div>
+                {tokenCount && tokenCount.tokens > 0 && (
+                  <div>
+                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#3551F2] rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, (tokenCount.tokens / 8000) * 100)}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Larger prompts take longer to load before the call starts.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Divider */}

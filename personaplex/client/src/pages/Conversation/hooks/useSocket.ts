@@ -97,11 +97,12 @@ export const useSocket = ({
   }, []);
 
   useEffect(() => {
-    if(socketStatus !== "connected") {
+    if (socketStatus === "disconnected") {
       return;
     }
     const intervalId = setInterval(() => {
-      if (lastMessageTime.current && Date.now() - lastMessageTime.current > 10000) {
+      const inactivityLimitMs = socketStatus === "connected" ? 30000 : 10 * 60 * 1000;
+      if (lastMessageTime.current && Date.now() - lastMessageTime.current > inactivityLimitMs) {
         console.log("closing socket due to inactivity", socketRef.current);
         socketRef.current?.close();
         // onDisconnect();

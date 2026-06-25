@@ -27,6 +27,7 @@
 import argparse
 import asyncio
 from dataclasses import dataclass
+import json
 import random
 import os
 from pathlib import Path
@@ -57,10 +58,6 @@ DeviceString = Literal["cuda"] | Literal["cpu"] #| Literal["mps"]
 # Short-lived store for text prompts uploaded via POST (avoids URL length limits).
 _prompt_store: dict[str, str] = {}
 
-# Each token requires a full GPU forward pass during connection setup. Very long prompts
-# block the event loop and cause WebSocket/proxy timeouts before the handshake is sent.
-MAX_TEXT_PROMPT_TOKENS = 2048
-
 
 async def handle_prompt_upload(request: web.Request) -> web.Response:
     try:
@@ -73,6 +70,24 @@ async def handle_prompt_upload(request: web.Request) -> web.Response:
     prompt_id = secrets.token_urlsafe(16)
     _prompt_store[prompt_id] = text
     return web.json_response({"id": prompt_id})
+
+
+async def handle_prompt_count(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    text = data.get("text", "")
+    if not isinstance(text, str):
+        return web.json_response({"error": "text must be a string"}, status=400)
+    tokenizer = request.app.get("text_tokenizer")
+    if tokenizer is None:
+        return web.json_response({"error": "server not ready"}, status=503)
+    if not text.strip():
+        return web.json_response({"tokens": 0, "chars": 0})
+    wrapped = wrap_with_system_tags(text)
+    tokens = tokenizer.encode(wrapped)
+    return web.json_response({"tokens": len(tokens), "chars": len(text)})
 
 
 def _resolve_text_prompt(request: web.Request) -> str:
@@ -195,19 +210,11 @@ class ServerState:
             else:
                 self.lm_gen.load_voice_prompt(voice_prompt_path)
         text_prompt = _resolve_text_prompt(request)
-        if len(text_prompt) > 0:
-            wrapped = wrap_with_system_tags(text_prompt)
-            tokens = self.text_tokenizer.encode(wrapped)
-            if len(tokens) > MAX_TEXT_PROMPT_TOKENS:
-                clog.log(
-                    "warning",
-                    f"text prompt truncated from {len(tokens)} to {MAX_TEXT_PROMPT_TOKENS} tokens "
-                    f"({len(text_prompt)} chars) to avoid connection timeouts",
-                )
-                tokens = tokens[:MAX_TEXT_PROMPT_TOKENS]
-            self.lm_gen.text_prompt_tokens = tokens
-        else:
-            self.lm_gen.text_prompt_tokens = None
+        self.lm_gen.text_prompt_tokens = (
+            self.text_tokenizer.encode(wrap_with_system_tags(text_prompt))
+            if len(text_prompt) > 0
+            else None
+        )
         seed = int(request["seed"]) if "seed" in request.query else None
 
         async def recv_loop():
@@ -292,8 +299,9 @@ class ServerState:
 
         clog.log("info", "accepted connection")
         if len(text_prompt) > 0:
+            token_count = len(self.lm_gen.text_prompt_tokens or [])
             preview = text_prompt if len(text_prompt) <= 200 else text_prompt[:200] + "..."
-            clog.log("info", f"text prompt ({len(text_prompt)} chars): {preview}")
+            clog.log("info", f"text prompt ({len(text_prompt)} chars, {token_count} tokens): {preview}")
         if len(request.query["voice_prompt"]) > 0:
             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
         close = False
@@ -321,22 +329,41 @@ class ServerState:
                     return False
                 return True
             async def ws_keepalive():
-                """Ping while loading system prompts so proxies don't drop idle connections."""
+                """Keep the connection alive while system prompts load (can take minutes)."""
                 try:
                     while True:
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(5)
                         if ws.closed:
                             break
                         await ws.ping()
+                        await ws.send_bytes(b"\x06")
                 except asyncio.CancelledError:
                     pass
                 except Exception:
                     pass
 
+            async def on_text_prompt_progress(done: int, total: int) -> None:
+                clog.log("info", f"text prompt progress: {done}/{total} tokens")
+                if ws.closed:
+                    return
+                try:
+                    payload = json.dumps({
+                        "type": "prompt_progress",
+                        "done": done,
+                        "total": total,
+                    }).encode("utf-8")
+                    await ws.send_bytes(b"\x04" + payload)
+                    await ws.ping()
+                except Exception:
+                    pass
+
             keepalive_task = asyncio.create_task(ws_keepalive())
             try:
-                # Reuse mimi for encoding voice prompt and then reset it before conversation starts
-                await self.lm_gen.step_system_prompts_async(self.mimi, is_alive=is_alive)
+                await self.lm_gen.step_system_prompts_async(
+                    self.mimi,
+                    is_alive=is_alive,
+                    on_text_prompt_progress=on_text_prompt_progress,
+                )
             finally:
                 keepalive_task.cancel()
                 try:
@@ -519,7 +546,9 @@ def main():
     logger.info("warming up the model")
     state.warmup()
     app = web.Application()
+    app["text_tokenizer"] = text_tokenizer
     app.router.add_post("/api/prompt", handle_prompt_upload)
+    app.router.add_post("/api/prompt/count", handle_prompt_count)
     app.router.add_get("/api/chat", state.handle_chat)
     if static_path is not None:
         async def handle_root(_):

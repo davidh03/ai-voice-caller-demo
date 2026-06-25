@@ -12,6 +12,8 @@ import fixWebmDuration from "webm-duration-fix";
 import { getMimeType, getExtension } from "./getMimeType";
 import { type ThemeType } from "./hooks/useSystemTheme";
 import { uploadTextPrompt } from "./api/uploadPrompt";
+import { countPromptTokens } from "./api/countPromptTokens";
+import { WSMessage } from "../../protocol/types";
 
 type ConversationProps = {
   workerAddr: string;
@@ -143,6 +145,24 @@ export const Conversation: FC<ConversationProps> = ({
   const audioSeed = useMemo(() => Math.round(1000000 * Math.random()), []);
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [showStats, setShowStats] = useState(false);
+  const [promptProgress, setPromptProgress] = useState<{ done: number; total: number } | null>(null);
+  const [expectedTokens, setExpectedTokens] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!modelParams.textPrompt.trim()) {
+      setExpectedTokens(null);
+      return;
+    }
+    countPromptTokens(modelParams.textPrompt)
+      .then((result) => {
+        if (!cancelled) setExpectedTokens(result.tokens);
+      })
+      .catch(() => {
+        if (!cancelled) setExpectedTokens(null);
+      });
+    return () => { cancelled = true; };
+  }, [modelParams.textPrompt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -176,10 +196,45 @@ export const Conversation: FC<ConversationProps> = ({
     stopRecording();
   }, [setIsOver]);
 
+  const onSocketMessage = useCallback((message: WSMessage) => {
+    if (message.type !== "metadata" || typeof message.data !== "object" || message.data === null) {
+      return;
+    }
+    const data = message.data as { type?: string; done?: number; total?: number };
+    if (data.type === "prompt_progress" && typeof data.done === "number" && typeof data.total === "number") {
+      setPromptProgress({ done: data.done, total: data.total });
+    }
+  }, []);
+
   const { socketStatus, sendMessage, socket, start, stop } = useSocket({
     uri: wsUrl ?? "",
     onDisconnect,
+    onMessage: onSocketMessage,
   });
+
+  const loadingPercent = useMemo(() => {
+    if (socketStatus === "connected") return 100;
+    if (promptProgress && promptProgress.total > 0) {
+      return Math.min(99, Math.round(10 + (promptProgress.done / promptProgress.total) * 90));
+    }
+    if (wsUrl) return 8;
+    return 3;
+  }, [socketStatus, promptProgress, wsUrl]);
+
+  const loadingLabel = useMemo(() => {
+    if (socketStatus === "connected") return "AI is ready";
+    if (!wsUrl) return "Uploading prompt to server…";
+    if (promptProgress && promptProgress.total > 0) {
+      return `Loading prompt into AI… ${promptProgress.done.toLocaleString()} / ${promptProgress.total.toLocaleString()} tokens`;
+    }
+    return "Initializing voice and preparing AI…";
+  }, [socketStatus, wsUrl, promptProgress]);
+
+  useEffect(() => {
+    if (socketStatus === "connected") {
+      setPromptProgress(null);
+    }
+  }, [socketStatus]);
 
   useEffect(() => {
     audioRecorder.current.ondataavailable = (e) => {
@@ -273,6 +328,33 @@ export const Conversation: FC<ConversationProps> = ({
             </button>
           </div>
         </header>
+
+        {!isOver && socketStatus !== "connected" && (
+          <div className="mx-4 mt-4 max-w-screen-xl md:mx-auto w-auto">
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-4">
+              <div className="flex items-center justify-between gap-4 mb-2">
+                <div>
+                  <p className="text-sm font-semibold text-[#060A39]">{loadingLabel}</p>
+                  {expectedTokens !== null && expectedTokens > 0 && (
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Total prompt size: {expectedTokens.toLocaleString()} tokens
+                    </p>
+                  )}
+                </div>
+                <span className="text-sm font-semibold text-[#3551F2]">{loadingPercent}%</span>
+              </div>
+              <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#3551F2] rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${loadingPercent}%` }}
+                />
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                Please keep this tab open. Large prompts can take several minutes to load.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Main content */}
         {audioContext.current && worklet.current ? (
@@ -394,21 +476,12 @@ export const Conversation: FC<ConversationProps> = ({
                   </div>
                   <div ref={textContainerRef} className="flex-1 overflow-y-auto p-5 scrollbar text-sm text-[#060A39] leading-relaxed">
                     <TextDisplay containerRef={textContainerRef} />
-                    {!wsUrl && (
+                    {socketStatus !== "connected" && (
                       <div className="flex items-center justify-center text-gray-400 py-16">
-                        <div className="text-center">
-                          <div className="animate-spin h-6 w-6 border-2 border-[#3551F2] border-t-transparent rounded-full mx-auto mb-3" />
-                          Preparing connection…
-                        </div>
-                      </div>
-                    )}
-                    {wsUrl && socketStatus === "connecting" && (
-                      <div className="flex items-center justify-center text-gray-400 py-16">
-                        <div className="text-center">
-                          <div className="animate-spin h-6 w-6 border-2 border-[#3551F2] border-t-transparent rounded-full mx-auto mb-3" />
-                          Connecting to AI…
-                          <p className="text-xs text-gray-400 mt-2 max-w-xs">
-                            Loading your system prompt. Large prompts can take up to a minute — please wait.
+                        <div className="text-center max-w-sm">
+                          <p className="text-sm text-[#060A39] font-medium">{loadingLabel}</p>
+                          <p className="text-xs text-gray-400 mt-2">
+                            The live transcript will appear here once the AI is ready.
                           </p>
                         </div>
                       </div>

@@ -1112,27 +1112,39 @@ class LMGen(StreamingModule[_LMGenState]):
         for _ in self._step_text_prompt_core():
             pass
 
-    async def _step_text_prompt_async(self, is_alive: Optional[Callable]=None):
+    async def _step_text_prompt_async(
+        self,
+        is_alive: Optional[Callable] = None,
+        on_progress: Optional[Callable] = None,
+    ):
         if self.text_prompt_tokens is None:
             return
         total = len(self.text_prompt_tokens)
+        if on_progress is not None and total > 0:
+            await on_progress(0, total)
         for i, text_prompt_token in enumerate(self.text_prompt_tokens):
             if is_alive is not None and i % 5 == 0 and not await is_alive():
                 print(f"Text prompt loading aborted at token {i}/{total}")
                 return
-            # Run GPU step off the event loop so WebSocket keepalives can fire.
             await asyncio.to_thread(
                 self.step,
                 moshi_tokens=self._encode_zero_frame(),
                 text_token=text_prompt_token,
                 input_tokens=self._encode_sine_frame(),
             )
+            if on_progress is not None and ((i + 1) % 25 == 0 or i + 1 == total):
+                await on_progress(i + 1, total)
         print('Done loading text prompt.')
 
-    async def step_system_prompts_async(self, mimi, is_alive: Optional[Callable]=None):
+    async def step_system_prompts_async(
+        self,
+        mimi,
+        is_alive: Optional[Callable] = None,
+        on_text_prompt_progress: Optional[Callable] = None,
+    ):
         await self._step_voice_prompt_async(mimi, is_alive)
         await self._step_audio_silence_async(is_alive)
-        await self._step_text_prompt_async(is_alive)
+        await self._step_text_prompt_async(is_alive, on_progress=on_text_prompt_progress)
         await self._step_audio_silence_async(is_alive)
 
     def step_system_prompts(self, mimi):
