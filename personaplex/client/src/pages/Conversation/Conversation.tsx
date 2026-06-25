@@ -12,7 +12,7 @@ import fixWebmDuration from "webm-duration-fix";
 import { getMimeType, getExtension } from "./getMimeType";
 import { type ThemeType } from "./hooks/useSystemTheme";
 import { uploadTextPrompt } from "./api/uploadPrompt";
-import { countPromptTokens } from "./api/countPromptTokens";
+import { countPromptTokens, SUGGESTED_MAX_PROMPT_TOKENS } from "./api/countPromptTokens";
 import { WSMessage } from "../../protocol/types";
 
 type ConversationProps = {
@@ -338,6 +338,9 @@ export const Conversation: FC<ConversationProps> = ({
                   {expectedTokens !== null && expectedTokens > 0 && (
                     <p className="text-xs text-gray-400 mt-0.5">
                       Total prompt size: {expectedTokens.toLocaleString()} tokens
+                      {expectedTokens > SUGGESTED_MAX_PROMPT_TOKENS && (
+                        <span className="text-amber-600"> — over suggested {SUGGESTED_MAX_PROMPT_TOKENS.toLocaleString()}</span>
+                      )}
                     </p>
                   )}
                 </div>

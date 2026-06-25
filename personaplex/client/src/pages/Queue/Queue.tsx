@@ -6,7 +6,7 @@ import { Conversation } from "../Conversation/Conversation";
 import { useModelParams } from "../Conversation/hooks/useModelParams";
 import { env } from "../../env";
 import { prewarmDecoderWorker } from "../../decoder/decoderWorker";
-import { countPromptTokens } from "../Conversation/api/countPromptTokens";
+import { countPromptTokens, PromptTokenCount, SUGGESTED_MAX_PROMPT_TOKENS } from "../Conversation/api/countPromptTokens";
 
 const VOICE_OPTIONS = [
   "NATF0.pt", "NATF1.pt", "NATF2.pt", "NATF3.pt",
@@ -84,7 +84,7 @@ const Homepage = ({
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [tokenCount, setTokenCount] = useState<{ tokens: number; chars: number } | null>(null);
+  const [tokenCount, setTokenCount] = useState<PromptTokenCount | null>(null);
   const [tokenCountLoading, setTokenCountLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -95,17 +95,18 @@ const Homepage = ({
       return;
     }
     setTokenCountLoading(true);
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
-      try {
-        const result = await countPromptTokens(textPrompt);
+      const result = await countPromptTokens(textPrompt, controller.signal);
+      if (!controller.signal.aborted) {
         setTokenCount(result);
-      } catch {
-        setTokenCount(null);
-      } finally {
         setTokenCountLoading(false);
       }
     }, 400);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [textPrompt]);
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
@@ -283,17 +284,20 @@ const Homepage = ({
                 placeholder="Define how your AI caller should behave. For example:&#10;&#10;'You are a professional virtual assistant for Cadre Crew. Help clients with scheduling, inquiries, and support. Be friendly, concise, and solution-focused.'"
               />
               <div className="mt-2 space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <p className="text-gray-400">
-                    No character limit — type, upload, or drag &amp; drop multiple .txt files.
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <p className="text-gray-500">
+                    Suggested max: <strong className="text-[#060A39]">{SUGGESTED_MAX_PROMPT_TOKENS.toLocaleString()} tokens</strong> for fastest loading.
+                    Larger prompts work but take longer before the call starts.
                   </p>
-                  <span className="text-gray-500 whitespace-nowrap ml-3">
+                  <span className="text-gray-600 whitespace-nowrap text-right">
                     {tokenCountLoading ? (
                       "Counting tokens…"
                     ) : tokenCount ? (
                       <>
-                        <strong className="text-[#3551F2]">{tokenCount.tokens.toLocaleString()}</strong>
-                        {" "}tokens · {tokenCount.chars.toLocaleString()} chars
+                        <strong className={tokenCount.tokens > SUGGESTED_MAX_PROMPT_TOKENS ? "text-amber-600" : "text-[#3551F2]"}>
+                          {tokenCount.tokens.toLocaleString()}
+                        </strong>
+                        {" "}tokens{tokenCount.estimated ? " (est.)" : ""} · {tokenCount.chars.toLocaleString()} chars
                       </>
                     ) : null}
                   </span>
@@ -302,13 +306,17 @@ const Homepage = ({
                   <div>
                     <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-[#3551F2] rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, (tokenCount.tokens / 8000) * 100)}%` }}
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          tokenCount.tokens > SUGGESTED_MAX_PROMPT_TOKENS ? "bg-amber-500" : "bg-[#3551F2]"
+                        }`}
+                        style={{ width: `${Math.min(100, (tokenCount.tokens / SUGGESTED_MAX_PROMPT_TOKENS) * 100)}%` }}
                       />
                     </div>
-                    <p className="text-xs text-gray-400 mt-1">
-                      Larger prompts take longer to load before the call starts.
-                    </p>
+                    {tokenCount.tokens > SUGGESTED_MAX_PROMPT_TOKENS && (
+                      <p className="text-xs text-amber-600 mt-1">
+                        Over the suggested {SUGGESTED_MAX_PROMPT_TOKENS.toLocaleString()} tokens — expect a longer wait when connecting.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
