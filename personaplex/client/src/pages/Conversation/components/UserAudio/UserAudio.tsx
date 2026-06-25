@@ -65,8 +65,8 @@ export const UserAudio: FC<UserAudioProps> = ({theme}) => {
   }, [startRecordingUser, stopRecording, socketStatus]);
 
   return (
-    <div className="user-audio h-5/6 aspect-square" ref={containerRef}>
-      <ClientVisualizer theme={theme} analyser={analyser} parent={containerRef}/>
+    <div className="w-full" ref={containerRef}>
+      <ClientVisualizer theme={theme} analyser={analyser} parent={containerRef} />
     </div>
   );
 };
