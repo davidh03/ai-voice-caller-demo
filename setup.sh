@@ -27,9 +27,9 @@ echo "    Repo: $SCRIPT_DIR"
 # ---------------------------------------------------------------------------
 echo "==> Updating apt packages..."
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -y
-sudo apt-get upgrade -y
-sudo apt-get install -y \
+apt-get update -y
+apt-get upgrade -y
+apt-get install -y \
   nano \
   curl \
   ca-certificates \
